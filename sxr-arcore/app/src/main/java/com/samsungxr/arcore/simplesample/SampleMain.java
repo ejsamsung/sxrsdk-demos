@@ -15,266 +15,548 @@
 
 package com.samsungxr.arcore.simplesample;
 
-import android.util.Log;
+import android.util.DisplayMetrics;
+import android.view.MotionEvent;
 
+import com.samsungxr.SXRBoxCollider;
 import com.samsungxr.SXRContext;
+import com.samsungxr.SXRDirectLight;
 import com.samsungxr.SXREventListeners;
+import com.samsungxr.SXRLight;
 import com.samsungxr.SXRMain;
 import com.samsungxr.SXRPicker;
+import com.samsungxr.SXRPointLight;
 import com.samsungxr.SXRScene;
 import com.samsungxr.SXRNode;
+import com.samsungxr.SXRTransform;
+import com.samsungxr.ITouchEvents;
 import com.samsungxr.mixedreality.SXRAnchor;
 import com.samsungxr.mixedreality.SXRHitResult;
 import com.samsungxr.mixedreality.SXRMixedReality;
 import com.samsungxr.mixedreality.SXRPlane;
 import com.samsungxr.mixedreality.SXRTrackingState;
-import com.samsungxr.mixedreality.IAnchorEventsListener;
-import com.samsungxr.mixedreality.IPlaneEventsListener;
+import com.samsungxr.mixedreality.IAnchorEvents;
+import com.samsungxr.mixedreality.IMixedReality;
+import com.samsungxr.mixedreality.IPlaneEvents;
+import com.samsungxr.utility.Log;
+import org.joml.Matrix4f;
+import org.joml.Quaternionf;
 import org.joml.Vector3f;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
-
+/**
+ * This sample illustrates how to load, place and move a 3D model
+ * on a plane in the real world.
+ */
 public class SampleMain extends SXRMain {
     private static String TAG = "SXR_ARCORE";
     private static int MAX_VIRTUAL_OBJECTS = 20;
 
     private SXRContext mSXRContext;
     private SXRScene mainScene;
-
     private SXRMixedReality mixedReality;
     private SampleHelper helper;
-    private TouchHandler mTouchHandler;
-
-
-
+    private DragHandler mTouchHandler;
     private List<SXRAnchor> mVirtualObjects;
     private int mVirtObjCount = 0;
+    private SXRDirectLight mSceneLight;
+    private SelectionHandler mSelector;
 
-
+    /**
+     * Initialize the MixedReality extension and
+     * provide it with listeners for plane detection
+     * and anchor tracking.
+     *
+     * A headlight is put in the scene to illuminate
+     * objects the camera is pointed at.
+     */
     @Override
-    public void onInit(SXRContext sxrContext) {
-        mSXRContext = sxrContext;
+    public void onInit(SXRContext ctx)
+    {
+        mSXRContext = ctx;
         mainScene = mSXRContext.getMainScene();
         helper = new SampleHelper();
-        mTouchHandler = new TouchHandler();
-        mVirtualObjects = new ArrayList<>() ;
+        mTouchHandler = new DragHandler();
+        mVirtualObjects = new ArrayList<>();
         mVirtObjCount = 0;
-
-        helper.initCursorController(sxrContext, mTouchHandler);
-
-
-        mixedReality = new SXRMixedReality(sxrContext, mainScene);
-        mixedReality.registerPlaneListener(planeEventsListener);
-        mixedReality.registerAnchorListener(anchorEventsListener);
+        mSceneLight = new SXRDirectLight(ctx);
+        mainScene.getMainCameraRig().getHeadTransformObject().attachComponent(mSceneLight);
+        mixedReality = new SXRMixedReality(mainScene);
+        mixedReality.getEventReceiver().addListener(planeEventsListener);
+        mixedReality.getEventReceiver().addListener(anchorEventsListener);
+        mSelector = new SelectionHandler(ctx, mixedReality);
         mixedReality.resume();
-
     }
 
+
+    /**
+     * Loads a 3D model using the asset loaqder and attaches
+     * a collider to it so it can be picked.
+     * If you are using phone AR, the touch screen can
+     * be used to drag, rotate or scale the object.
+     * If you are using a headset, the controller
+     * is used for picking and moving.
+     */
+    private SXRNode load3dModel(final SXRContext ctx) throws IOException
+    {
+        final SXRNode sceneObject = ctx.getAssetLoader().loadModel("objects/andy.obj");
+        sceneObject.attachComponent(new SXRBoxCollider(ctx));
+        sceneObject.getEventReceiver().addListener(mSelector);
+        return sceneObject;
+    }
+
+    /**
+     * The mixed reality extension runs in the background and does
+     * light estimation. Each frame the intensity of the ambient
+     * lighting is adjusted based on that estimate.
+     */
     @Override
-    public void onStep() {
+    public void onStep()
+    {
         super.onStep();
-        for (SXRAnchor anchor: mVirtualObjects) {
-            for (SXRNode obj: anchor.getChildren()) {
-                ((VirtualObject)obj).reactToLightEnvironment(
-                        mixedReality.getLightEstimate().getPixelIntensity());
-            }
-        }
+        float lightEstimate = mixedReality.getLightEstimate().getPixelIntensity();
+        mSceneLight.setAmbientIntensity(lightEstimate, lightEstimate, lightEstimate, 1);
+        mSceneLight.setDiffuseIntensity(0.4f, 0.4f, 0.4f, 1);
+        mSceneLight.setSpecularIntensity(0.2f, 0.2f, 0.2f, 1);
     }
 
-    private IPlaneEventsListener planeEventsListener = new IPlaneEventsListener() {
-        @Override
-        public void onPlaneDetection(SXRPlane sxrPlane) {
-            sxrPlane.setNode(helper.createQuadPlane(getSXRContext()));
-            mainScene.addNode(sxrPlane);
+
+    /**
+     * Load a 3D model and place it in the virtual world
+     * at the given position. The pose is a 4x4 matrix
+     * giving the real world position/orientation of
+     * the object. We create an anchor (and a corresponding
+     * node) to link the real and virtual pose together.
+     * The node attached to the anchor will be moved and
+     * oriented by the framework, anything you do
+     * to the transform of this node will be discarded
+     * (which is why we scale/rotate the child instead).
+     * @param pose
+     */
+    public void addVirtualObject(float[] pose)
+    {
+        if (mVirtObjCount >= MAX_VIRTUAL_OBJECTS)
+        {
+            return;
         }
-
-        @Override
-        public void onPlaneStateChange(SXRPlane sxrPlane, SXRTrackingState sxrTrackingState) {
-            if (sxrTrackingState != SXRTrackingState.TRACKING) {
-                sxrPlane.setEnable(false);
-            }
-            else {
-                sxrPlane.setEnable(true);
-            }
-        }
-
-        @Override
-        public void onPlaneMerging(SXRPlane sxrPlane, SXRPlane sxrPlane1) {
-        }
-    };
-
-    private IAnchorEventsListener anchorEventsListener = new IAnchorEventsListener() {
-        @Override
-        public void onAnchorStateChange(SXRAnchor sxrAnchor, SXRTrackingState sxrTrackingState) {
-            if (sxrTrackingState != SXRTrackingState.TRACKING) {
-                sxrAnchor.setEnable(false);
-            }
-            else {
-                sxrAnchor.setEnable(true);
-            }
-        }
-    };
-
-    public class TouchHandler extends SXREventListeners.TouchEvents {
-        private SXRNode mDraggingObject = null;
-        private float mHitX;
-        private float mHitY;
-        private float mYaw;
-        private float mScale;
-
-
-        @Override
-        public void onEnter(SXRNode sceneObj, SXRPicker.SXRPickedObject pickInfo) {
-            super.onEnter(sceneObj, pickInfo);
-
-            if (sceneObj == mixedReality.getPassThroughObject() || mDraggingObject != null) {
-                return;
-            }
-
-            ((VirtualObject)sceneObj).onPickEnter();
-        }
-
-        @Override
-        public void onExit(SXRNode sceneObj, SXRPicker.SXRPickedObject pickInfo) {
-            super.onExit(sceneObj, pickInfo);
-
-            if (sceneObj == mixedReality.getPassThroughObject()) {
-                if (mDraggingObject != null) {
-                    ((VirtualObject) mDraggingObject).onPickExit();
-                    mDraggingObject = null;
-                }
-                return;
-            }
-
-            if (mDraggingObject == null) {
-                ((VirtualObject) sceneObj).onPickExit();
-            }
-        }
-
-        @Override
-        public void onTouchStart(SXRNode sceneObj, SXRPicker.SXRPickedObject pickInfo) {
-            super.onTouchStart(sceneObj, pickInfo);
-
-            if (sceneObj == mixedReality.getPassThroughObject()) {
-                return;
-            }
-
-            if (mDraggingObject == null) {
-                mDraggingObject = sceneObj;
-
-                mYaw = sceneObj.getTransform().getRotationYaw();
-                mScale = sceneObj.getTransform().getScaleX();
-
-                mHitX = pickInfo.motionEvent.getX();
-                mHitY = pickInfo.motionEvent.getY();
-
-                Log.d(TAG, "onStartDragging");
-                ((VirtualObject)sceneObj).onTouchStart();
-            }
-        }
-
-        @Override
-        public void onTouchEnd(SXRNode sceneObj, SXRPicker.SXRPickedObject pickInfo) {
-            super.onTouchEnd(sceneObj, pickInfo);
-
-
-            if (mDraggingObject != null) {
-                Log.d(TAG, "onStopDragging");
-
-                if (pickNode(mDraggingObject) == null) {
-                    ((VirtualObject) mDraggingObject).onPickExit();
-                } else {
-                    ((VirtualObject)mDraggingObject).onTouchEnd();
-                }
-                mDraggingObject = null;
-            } else if (sceneObj == mixedReality.getPassThroughObject()) {
-                onSingleTap(sceneObj, pickInfo);
-            }
-        }
-
-        @Override
-        public void onInside(SXRNode sceneObj, SXRPicker.SXRPickedObject pickInfo) {
-            super.onInside(sceneObj, pickInfo);
-
-            if (mDraggingObject == null) {
-                return;
-            } else {
-                // get the current x,y hit location
-                float hitLocationX = pickInfo.motionEvent.getX();
-                float hitLocationY = pickInfo.motionEvent.getY();
-
-                // find the diff from when we first touched down
-                float diffX = hitLocationX - mHitX;
-                float diffY = (hitLocationY - mHitY) / 100.0f;
-
-                // when we move along X, calculate an angle to rotate the model around the Y axis
-                float angle = mYaw + (diffX * 2);
-
-                // when we move along Y, calculate how much to scale the model
-                float scale = mScale + (diffY);
-                if(scale < 0.1f) {
-                    scale = 0.1f;
-                }
-
-                // set rotation and scale
-                mDraggingObject.getTransform().setRotationByAxis(angle, 0.0f, 1.0f, 0.0f);
-                mDraggingObject.getTransform().setScale(scale, scale, scale);
-            }
-
-
-            pickInfo = pickNode(mixedReality.getPassThroughObject());
-            if (pickInfo != null) {
-                SXRHitResult sxrHitResult = mixedReality.hitTest(
-                        mixedReality.getPassThroughObject(), pickInfo);
-
-                if (sxrHitResult != null) {
-                    mixedReality.updateAnchorPose((SXRAnchor)mDraggingObject.getParent(),
-                            sxrHitResult.getPose());
-                }
-            }
-        }
-
-        private SXRPicker.SXRPickedObject pickNode(SXRNode sceneObject) {
-            Vector3f origin = new Vector3f();
-            Vector3f direction = new Vector3f();
-
-            helper.getCursorController().getPicker().getWorldPickRay(origin, direction);
-
-            return SXRPicker.pickNode(sceneObject, origin.x, origin.y, origin.z,
-                    direction.x, direction.y, direction.z);
-        }
-
-        private void onSingleTap(SXRNode sceneObj, SXRPicker.SXRPickedObject collision) {
-            SXRHitResult sxrHitResult = mixedReality.hitTest(sceneObj, collision);
-            VirtualObject andy = new VirtualObject(mSXRContext);
-
-            if (sxrHitResult == null) {
-                return;
-            }
-
-            addVirtualObject(sxrHitResult.getPose(), andy);
-        }
-    }
-
-    private void addVirtualObject(float[] pose, VirtualObject andy) {
-        SXRAnchor anchor;
-
-        if (mVirtObjCount < MAX_VIRTUAL_OBJECTS) {
-             anchor = mixedReality.createAnchor(pose, andy);
-
-            mainScene.addNode(anchor);
+        try
+        {
+            SXRNode andy = load3dModel(getSXRContext());
+            SXRNode anchorObj = mixedReality.createAnchorNode(pose);
+            anchorObj.addChildObject(andy);
+            SXRAnchor anchor = (SXRAnchor) anchorObj.getComponent(SXRAnchor.getComponentType());
             mVirtualObjects.add(anchor);
+            mainScene.addNode(anchorObj);
+            mVirtObjCount++;
         }
-        else {
-            anchor = mVirtualObjects.get(mVirtObjCount % mVirtualObjects.size());
-            mixedReality.updateAnchorPose(anchor, pose);
+        catch (IOException ex)
+        {
+            ex.printStackTrace();
+            Log.e(TAG, ex.getMessage());
         }
-
-        anchor.setName("id: " + mVirtObjCount);
-        Log.d(TAG, "New virtual object " + anchor.getName());
-
-        mVirtObjCount++;
     }
+
+    /**
+     * The plane events listener handles plane detection events.
+     * It also handles initialization and shutdown.
+     */
+    private IPlaneEvents planeEventsListener = new IPlaneEvents()
+    {
+        /**
+         * Get the depth of the touch screen in the 3D world
+         * and give it to the cursor controller so touch
+         * events will be handled properly.
+         */
+        @Override
+        public void onStartPlaneDetection(IMixedReality mr)
+        {
+            float screenDepth = mr.getScreenDepth();
+            mr.getPassThroughObject().getEventReceiver().addListener(mTouchHandler);
+            helper.initCursorController(mSXRContext, mTouchHandler, screenDepth);
+        }
+
+        @Override
+        public void onStopPlaneDetection(IMixedReality mr) { }
+
+        /**
+         * Place a transparent quad in the 3D scene to indicate
+         * vertically upward planes (floor, table top).
+         * We don't need colliders on these since they are
+         * not pickable.
+          */
+        @Override
+        public void onPlaneDetected(SXRPlane plane)
+        {
+            if (plane.getPlaneType() == SXRPlane.Type.VERTICAL)
+            {
+                return;
+            }
+            SXRNode planeMesh = helper.createQuadPlane(getSXRContext());
+            float[] pose = new float[16];
+
+            plane.getCenterPose(pose);
+            planeMesh.attachComponent(plane);
+            mainScene.addNode(planeMesh);
+            addVirtualObject(pose);
+        }
+
+        /**
+         * Show/hide the 3D plane node based on whether it
+         * is being tracked or not.
+         */
+        @Override
+        public void onPlaneStateChange(SXRPlane SXRPlane, SXRTrackingState state)
+        {
+            SXRPlane.setEnable(state == SXRTrackingState.TRACKING);
+        }
+
+        @Override
+        public void onPlaneMerging(SXRPlane SXRPlane, SXRPlane SXRPlane1) { }
+    };
+
+    /**
+     * Show/hide the 3D node associated with the anchor
+     * based on whether it is being tracked or not.
+     */
+    private IAnchorEvents anchorEventsListener = new IAnchorEvents()
+    {
+        @Override
+        public void onAnchorStateChange(SXRAnchor SXRAnchor, SXRTrackingState state)
+        {
+            SXRAnchor.setEnable(state == SXRTrackingState.TRACKING);
+        }
+    };
+
+    /**
+     * Handles selection hilighting, rotation and scaling
+     * of currently selected 3D object.
+     * A light attached to the parent of the
+     * selected 3D object is used for hiliting it.
+     * The root of the hierarchy can be rotated or scaled.
+     */
+    static public class SelectionHandler implements ITouchEvents
+    {
+        static final int DRAG = 1;
+        static final int SCALE_ROTATE = -1;
+        static final int UNTOUCHED = 0;
+        static private SXRNode mSelected = null;
+        private int mSelectionMode = UNTOUCHED;
+        private final float[] PICKED_COLOR = {0.4f, 0.6f, 0, 1.0f};
+        private final float[] UPDATE_COLOR = {0.6f, 0, 0.4f, 1.0f};
+        private final float[] DRAG_COLOR = {0, 0.6f, 0.4f, 1.0f};
+        private SXRNode mSelectionLight;
+        private IMixedReality mMixedReality;
+        private float mHitY;
+        private float mHitX;
+
+        public SelectionHandler(SXRContext ctx, IMixedReality mr)
+        {
+            super();
+            mMixedReality = mr;
+            mSelectionLight = new SXRNode(ctx);
+            mSelectionLight.setName("SelectionLight");
+            SXRPointLight light = new SXRPointLight(ctx);
+            light.setSpecularIntensity(0.1f, 0.1f, 0.1f, 0.1f);
+            mSelectionLight.attachComponent(light);
+            mSelectionLight.getTransform().setPositionZ(1.0f);
+        }
+
+        public static SXRNode getSelected() { return mSelected; }
+
+        /*
+         * When entering an anchored object, it is hilited by
+         * adding a point light under its parent.
+         */
+        public void onEnter(SXRNode target, SXRPicker.SXRPickedObject pickInfo)
+        {
+            if (mSelected != null)
+            {
+                return;
+            }
+            SXRPointLight light =
+                (SXRPointLight) mSelectionLight.getComponent(SXRLight.getComponentType());
+            light.setDiffuseIntensity(PICKED_COLOR[0],
+                                      PICKED_COLOR[1],
+                                      PICKED_COLOR[1],
+                                      PICKED_COLOR[2]);
+            SXRNode lightParent = mSelectionLight.getParent();
+            SXRNode targetParent = target.getParent();
+
+            if (lightParent != null)
+            {
+                if (lightParent != targetParent)
+                {
+                    lightParent.removeChildObject(mSelectionLight);
+                    targetParent.addChildObject(mSelectionLight);
+                    mSelectionLight.getComponent(SXRLight.getComponentType()).enable();
+                }
+                else
+                {
+                    mSelectionLight.getComponent(SXRLight.getComponentType()).enable();
+                }
+            }
+            else
+            {
+                targetParent.addChildObject(mSelectionLight);
+                mSelectionLight.getComponent(SXRLight.getComponentType()).enable();
+            }
+        }
+
+        /*
+         * When the object is no longer selected, its selection light is disabled.
+         */
+        public void onExit(SXRNode sceneObj, SXRPicker.SXRPickedObject pickInfo)
+        {
+            if ((mSelected == sceneObj) || (mSelected == null))
+            {
+                mSelectionLight.getComponent(SXRLight.getComponentType()).disable();
+                mSelected = null;
+            }
+        }
+
+        /*
+         * The color of the selection light changes when the object is being dragged.
+         * If another object is already selected, ignore the touch event.
+         */
+        public void onTouchStart(SXRNode sceneObj, SXRPicker.SXRPickedObject pickInfo)
+        {
+            if (pickInfo.motionEvent == null)
+            {
+                return;
+            }
+            if (mSelected == null)
+            {
+                startTouch(sceneObj,
+                           pickInfo.motionEvent.getX(),
+                           pickInfo.motionEvent.getY(),
+                           SCALE_ROTATE);
+            }
+        }
+
+        public void onTouchEnd(SXRNode sceneObj, SXRPicker.SXRPickedObject pickInfo) { }
+
+        public void onInside(SXRNode sceneObj, SXRPicker.SXRPickedObject pickInfo) { }
+
+        public void onMotionOutside(SXRPicker picker, MotionEvent event) { }
+
+        /*
+         * Rotate and scale the object relative to its current state.
+         * The node being rotated / scaled is a child
+         * of the anchored object (which is being oriented and positioned
+         * by MixedReality).
+         */
+        private void scaleRotate(float rotateDelta, float scaleDelta)
+        {
+            SXRNode selected = getSelected();
+            SXRTransform t = selected.getTransform();
+            float scale = t.getScaleX();
+            Quaternionf q = new Quaternionf();
+            Vector3f ea = new Vector3f();
+            float angle = rotateDelta / 10.0f;
+
+            /*
+             * rotate about Y axis
+             */
+            q.set(t.getRotationX(), t.getRotationY(), t.getRotationZ(), t.getRotationW());
+            q.getEulerAnglesXYZ(ea);
+            q.rotateAxis(angle, 0, 1, 0);
+
+            /*
+             * scale the model
+             */
+            scale += scaleDelta / 20.0f;
+            if (scale < 0.1f)
+            {
+                scale = 0.1f;
+            }
+            else if (scale > 50.0f)
+            {
+                scale = 50.0f;
+            }
+            t.setRotation(q.w, q.x, q.y, q.z);
+            t.setScale(scale, scale, scale);
+        }
+
+        private void drag(float x, float y)
+        {
+            SXRAnchor anchor = (SXRAnchor) mSelected.getParent().getComponent(SXRAnchor.getComponentType());
+
+            if (anchor != null)
+            {
+                SXRHitResult hit = mMixedReality.hitTest(x, y);
+
+                if (hit != null)
+                {                           // move the object to a new position
+                    mMixedReality.updateAnchorPose(anchor, hit.getPose());
+                }
+            }
+        }
+
+        public void update(SXRPicker.SXRPickedObject pickInfo)
+        {
+            float x = pickInfo.motionEvent.getX();
+            float y = pickInfo.motionEvent.getY();
+
+            if (mSelectionMode == SCALE_ROTATE)
+            {
+                float dx = (x - mHitX) / 100.0f;
+                float dy = (y - mHitY) / 100.0f;
+                scaleRotate(dx, dy);
+            }
+            else if (mSelectionMode == DRAG)
+            {
+                drag(x, y);
+            }
+        }
+
+        public void startTouch(SXRNode sceneObj, float hitx, float hity, int mode)
+        {
+            SXRPointLight light =
+                (SXRPointLight) mSelectionLight.getComponent(SXRLight.getComponentType());
+            mSelectionMode = mode;
+            mSelected = sceneObj;
+            if (mode == DRAG)
+            {
+                light.setDiffuseIntensity(DRAG_COLOR[0],
+                                          DRAG_COLOR[1],
+                                          DRAG_COLOR[1],
+                                          DRAG_COLOR[2]);
+            }
+            else
+            {
+                light.setDiffuseIntensity(UPDATE_COLOR[0],
+                                          UPDATE_COLOR[1],
+                                          UPDATE_COLOR[1],
+                                          UPDATE_COLOR[2]);
+            }
+            mHitX = hitx;
+            mHitY = hity;
+        }
+
+        public void endTouch()
+        {
+            SXRPointLight light =
+                (SXRPointLight) mSelectionLight.getComponent(SXRLight.getComponentType());
+            light.setDiffuseIntensity(PICKED_COLOR[0],
+                                      PICKED_COLOR[1],
+                                      PICKED_COLOR[1],
+                                      PICKED_COLOR[2]);
+            mSelected = null;
+            mSelectionMode = UNTOUCHED;
+        }
+    }
+
+
+    /**
+     * Handles touch events for the screen
+     * (those not inside 3D anchored objects).
+     * If phone AR is being used with passthru video,
+     * the object displaying the camera output also
+     * has a collider and is touchable.
+     * This is how picking is handled when using
+     * the touch screen.
+     *
+     * Tapping the screen or clicking on a plane
+     * will cause a 3D object to be placed there.
+     * Dragging with the controller or your finger
+     * inside the object will scale it (Y direction)
+     * and rotate it (X direction). Dragging outside
+     * a 3D object will drag the currently selected
+     * object (the last one you added/manipulated).
+     */
+    public class DragHandler extends SXREventListeners.TouchEvents
+    {
+
+        @Override
+        public void onTouchStart(SXRNode sceneObj, SXRPicker.SXRPickedObject pickInfo)
+        { }
+
+        @Override
+        public void onTouchEnd(SXRNode sceneObj, SXRPicker.SXRPickedObject pickInfo)
+        {
+            if (SelectionHandler.getSelected() != null)
+            {
+                mSelector.endTouch();
+            }
+            else
+            {
+                SXRAnchor anchor = findAnchorNear(pickInfo.hitLocation[0],
+                                                  pickInfo.hitLocation[1],
+                                                  pickInfo.hitLocation[2],
+                                                  300);
+                if (anchor != null)
+                {
+                    return;
+                }
+                float x = pickInfo.motionEvent.getX();
+                float y = pickInfo.motionEvent.getY();
+                SXRHitResult hit = mixedReality.hitTest(x, y);
+                if (hit != null)
+                {
+                    addVirtualObject(hit.getPose());
+                }
+            }
+        }
+
+        public void onInside(SXRNode sceneObj, SXRPicker.SXRPickedObject pickInfo)
+        {
+            SXRNode selected = mSelector.getSelected();
+
+            if (pickInfo.motionEvent == null)
+            {
+                return;
+            }
+            if (pickInfo.touched)           // currently touching an object?
+            {
+                if (selected != null)       // is a 3D object selected?
+                {
+                    mSelector.update(pickInfo);
+                }
+                else
+                {
+                    SXRAnchor anchor = findAnchorNear(pickInfo.hitLocation[0],
+                                                      pickInfo.hitLocation[1],
+                                                      pickInfo.hitLocation[2],
+                                                      150);
+                    if (anchor != null)
+                    {
+                        selected = anchor.getOwnerObject();
+                        mSelector.startTouch(selected.getChildByIndex(0),
+                                             pickInfo.motionEvent.getX(),
+                                             pickInfo.motionEvent.getY(),
+                                             SelectionHandler.DRAG);
+                    }
+                }
+            }
+        }
+
+        /**
+         * Look for a 3D object in the scene near the given position.
+         * Used ro prevent objects from being placed too close together.
+         */
+        private SXRAnchor findAnchorNear(float x, float y, float z, float maxdist)
+        {
+            Matrix4f anchorMtx = new Matrix4f();
+            Vector3f v = new Vector3f();
+            for (SXRAnchor anchor : mVirtualObjects)
+            {
+                float[] anchorPose = anchor.getPose();
+                anchorMtx.set(anchorPose);
+                anchorMtx.getTranslation(v);
+                v.x -= x;
+                v.y -= y;
+                v.z -= z;
+                float d = v.length();
+                if (d < maxdist)
+                {
+                    return anchor;
+                }
+            }
+            return null;
+        }
+    };
+
 }
