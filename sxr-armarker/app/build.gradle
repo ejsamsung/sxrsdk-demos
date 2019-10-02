@@ -1,0 +1,49 @@
+apply plugin: 'com.android.application'
+
+System.setProperty("appName", "sxr-armarker")
+
+if(file("../../common.gradle").exists()) {
+    apply from: '../../common.gradle'
+}
+else if(file("../../../../sxrsdk-demos/common.gradle").exists()) {
+    apply from: '../../../../sxrsdk-demos/common.gradle'
+}
+
+android {
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.txt'
+        }
+    }
+
+    sourceSets.main {
+        jni.srcDirs = [] // no auto generation of Android.mk
+        jniLibs.srcDir 'libs' // pre-compiled libraries
+    }
+}
+
+dependencies {
+    // ARCore library
+    implementation "com.google.ar:core:1.8.0"
+    implementation 'com.android.support:support-v4:26.1.0'
+
+    def useLocalDependencies = false
+    allprojects.repositories.flatDir.dirs.each {
+        it.each {
+            if (file(it).exists()) {
+                useLocalDependencies = true
+                return true
+            }
+        }
+    }
+
+    if (findProject(':MixedReality')) {
+        implementation project(':MixedReality')
+    } else if (useLocalDependencies) {
+        debugImplementation(name: 'MixedReality-debug', ext: 'aar')
+        releaseImplementation(name: 'MixedReality-release', ext: 'aar')
+    } else {
+        implementation "com.samsungxr:MixedReality:$sxrVersion"
+    }
+}

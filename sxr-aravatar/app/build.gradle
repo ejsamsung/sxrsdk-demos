@@ -9,15 +9,6 @@ else if(file("../../../../sxrsdk-demos/common.gradle").exists()) {
     apply from: '../../../../sxrsdk-demos/common.gradle'
 }
 
-allprojects {
-    repositories {
-        jcenter()
-        flatDir {
-            dirs 'libs'
-        }
-    }
-}
-
 android {
     buildTypes {
         release {
@@ -34,16 +25,24 @@ android {
 
 dependencies {
     // ARCore library
-    implementation "com.google.ar:core:1.5.0"
-    implementation 'com.android.support:support-v4:27.0.2'
+    implementation "com.google.ar:core:1.8.0"
+    implementation 'com.android.support:support-v4:26.1.0'
 
-    if (project.hasProperty("useLocalDependencies") && project.useLocalDependencies) {
-        if (findProject(':MixedReality')) {
-            implementation project(':MixedReality')
-        } else {
-            debugImplementation(name: 'MixedReality-debug', ext: 'aar')
-            releaseImplementation(name: 'MixedReality-release', ext: 'aar')
+    def useLocalDependencies = false
+    allprojects.repositories.flatDir.dirs.each {
+        it.each {
+            if (file(it).exists()) {
+                useLocalDependencies = true
+                return true
+            }
         }
+    }
+
+    if (findProject(':MixedReality')) {
+        implementation project(':MixedReality')
+    } else if (useLocalDependencies) {
+        debugImplementation(name: 'MixedReality-debug', ext: 'aar')
+        releaseImplementation(name: 'MixedReality-release', ext: 'aar')
     } else {
         implementation "com.samsungxr:MixedReality:$sxrVersion"
     }

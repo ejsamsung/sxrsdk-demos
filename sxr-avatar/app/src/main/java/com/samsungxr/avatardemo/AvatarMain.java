@@ -25,7 +25,7 @@ import java.io.InputStream;
 
 public class AvatarMain extends SXRMain {
     private final String mModelPath = "YBot/ybot.fbx";
-    private final String[] mAnimationPaths =  { "animation/mixamo/Ybot_SambaDancing.bvh" };
+    private final String[] mAnimationPaths =  { "YBot/Zombie_Stand_Up_mixamo.com.bvh", "YBot/Football_Hike_mixamo.com.bvh" };
     private final String mBoneMapPath = "animation/mixamo/mixamo_map.txt";
     private static final String TAG = "AVATAR";
     private SXRContext mContext;
@@ -44,7 +44,9 @@ public class AvatarMain extends SXRMain {
         {
             if (avatarRoot.getParent() == null)
             {
-                mContext.runOnGlThread(new Runnable()
+                mScene.addNode(avatarRoot);
+                loadNextAnimation(avatar, mBoneMap);
+                mContext.runOnGlThreadPostRender(1, new Runnable()
                 {
                     public void run()
                     {
@@ -53,11 +55,15 @@ public class AvatarMain extends SXRMain {
                         avatarRoot.getTransform().setScale(sf, sf, sf);
                         bv = avatarRoot.getBoundingVolume();
                         avatarRoot.getTransform().setPosition(-bv.center.x, -bv.minCorner.y, -bv.center.z - bv.radius);
-                        mScene.addNode(avatarRoot);
+                        mContext.runOnTheFrameworkThread(new Runnable()
+                        {
+                            public void run() {
+                                loadNextAnimation(avatar, mBoneMap);
+                            }
+                        });
                     }
                 });
             }
-            loadNextAnimation(avatar, mBoneMap);
         }
 
         @Override
@@ -65,6 +71,7 @@ public class AvatarMain extends SXRMain {
         {
             animation.setRepeatMode(SXRRepeatMode.ONCE);
             animation.setSpeed(1f);
+            avatar.setBlend(1);
             ++mNumAnimsLoaded;
             if (!avatar.isRunning())
             {
@@ -74,15 +81,12 @@ public class AvatarMain extends SXRMain {
             {
                 avatar.start(animation.getName());
             }
-            if (mNumAnimsLoaded < mAnimationPaths.length)
-            {
-                loadNextAnimation(avatar, mBoneMap);
-            }
+            loadNextAnimation(avatar, mBoneMap);
         }
 
         public void onModelLoaded(SXRAvatar avatar, final SXRNode avatarRoot, String filePath, String errors) { }
 
-        public void onAnimationFinished(SXRAvatar avatar, SXRAnimator animator, SXRAnimation animation) { }
+        public void onAnimationFinished(SXRAvatar avatar, SXRAnimator animator) { }
 
         public void onAnimationStarted(SXRAvatar avatar, SXRAnimator animator) { }
     };
@@ -152,7 +156,7 @@ public class AvatarMain extends SXRMain {
         skyMtl.setSpecularColor(0, 0, 0, 1);
         skyMtl.setSpecularExponent(0);
         rig.getHeadTransformObject().attachComponent(headLight);
-//        headLight.setShadowRange(0.1f, 20);
+        headLight.setShadowRange(0.1f, 20);
         topLightObj.attachComponent(topLight);
         topLightObj.getTransform().rotateByAxis(-90, 1, 0, 0);
         topLightObj.getTransform().setPosition(0, 2, -1);
@@ -163,11 +167,20 @@ public class AvatarMain extends SXRMain {
         return env;
     }
 
-    private void loadNextAnimation(SXRAvatar avatar, String bonemap) {
-        try {
-            SXRAndroidResource res = new SXRAndroidResource(mContext, mAnimationPaths[mNumAnimsLoaded]);
+    private void loadNextAnimation(SXRAvatar avatar, String bonemap)
+    {
+        if (mNumAnimsLoaded >= mAnimationPaths.length)
+        {
+            return;
+        }
+        try
+        {
+            SXRAndroidResource res =
+                new SXRAndroidResource(mContext, mAnimationPaths[mNumAnimsLoaded]);
             avatar.loadAnimation(res, bonemap);
-        } catch (IOException ex) {
+        }
+        catch (IOException ex)
+        {
             ex.printStackTrace();
             mActivity.finish();
             mActivity = null;

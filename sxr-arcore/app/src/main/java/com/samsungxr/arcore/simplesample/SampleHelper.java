@@ -15,10 +15,11 @@
 
 package com.samsungxr.arcore.simplesample;
 
+import android.opengl.GLES30;
+
 import com.samsungxr.SXRAndroidResource;
 import com.samsungxr.SXRContext;
 import com.samsungxr.SXRMaterial;
-import com.samsungxr.SXRMesh;
 import com.samsungxr.SXRPicker;
 import com.samsungxr.SXRRenderData;
 import com.samsungxr.SXRNode;
@@ -70,40 +71,30 @@ public class SampleHelper {
        };
     }
 
-    public SXRNode createQuadPlane(SXRContext SXRContext)
+    public SXRNode createPlaneNode(SXRContext sxrContext)
     {
-        SXRNode plane = new SXRNode(SXRContext);
-        SXRMesh mesh = SXRMesh.createQuad(SXRContext,
-                "float3 a_position", 1.0f, 1.0f);
-        SXRMaterial mat = new SXRMaterial(SXRContext, SXRMaterial.SXRShaderType.Phong.ID);
-        SXRNode polygonObject = new SXRNode(SXRContext, mesh, mat);
         Vector4f color = mColors[mPlaneIndex % mColors.length];
-
-        plane.setName("Plane" + mPlaneIndex);
-        polygonObject.setName("PlaneGeometry" + mPlaneIndex);
-        mPlaneIndex++;
+        SXRMaterial mat = new SXRMaterial(sxrContext, SXRMaterial.SXRShaderType.Phong.ID);
         mat.setDiffuseColor(color.x, color.y, color.x, color.w);
-        polygonObject.getRenderData().disableLight();
-        polygonObject.getRenderData().setAlphaBlend(true);
-        polygonObject.getRenderData().setRenderingOrder(SXRRenderData.SXRRenderingOrder.TRANSPARENT);
-        polygonObject.getTransform().setRotationByAxis(-90, 1, 0, 0);
-        plane.addChildObject(polygonObject);
+
+        SXRRenderData renderData = new SXRRenderData(sxrContext);
+        renderData.disableLight();
+        renderData.setAlphaBlend(true);
+        renderData.setRenderingOrder(SXRRenderData.SXRRenderingOrder.TRANSPARENT);
+        renderData.setDrawMode(GLES30.GL_TRIANGLE_FAN);
+        renderData.setMaterial(mat);
+
+        SXRNode plane = new SXRNode(sxrContext);
+        plane.attachComponent(renderData);
+        plane.setName("Plane" + mPlaneIndex);
+        mPlaneIndex++;
         return plane;
     }
 
-    public void initCursorController(SXRContext SXRContext, final ITouchEvents handler, final float displayDepth)
+    public void initCursorController(final SXRContext ctx, final ITouchEvents handler, final float displayDepth)
     {
         final float cursorDepth = 100.0f;
-        SXRContext.getMainScene().getEventReceiver().addListener(handler);
-        SXRInputManager inputManager = SXRContext.getInputManager();
-        mCursor = new SXRNode(SXRContext,
-                SXRContext.createQuad(0.2f * cursorDepth,
-                        0.2f * cursorDepth),
-                SXRContext.getAssetLoader().loadTexture(new SXRAndroidResource(SXRContext,
-                        R.raw.cursor)));
-        mCursor.getRenderData().setDepthTest(false);
-        mCursor.getRenderData().disableLight();
-        mCursor.getRenderData().setRenderingOrder(SXRRenderData.SXRRenderingOrder.OVERLAY);
+        SXRInputManager inputManager = ctx.getInputManager();
         final EnumSet<SXRPicker.EventOptions> eventOptions = EnumSet.of(
                 SXRPicker.EventOptions.SEND_TOUCH_EVENTS,
                 SXRPicker.EventOptions.SEND_TO_HIT_OBJECT,
@@ -112,19 +103,34 @@ public class SampleHelper {
         {
             public void onCursorControllerSelected(SXRCursorController newController, SXRCursorController oldController)
             {
-                if (oldController != null)
+                if (handler != null)
                 {
-                    oldController.removePickEventListener(handler);
+                    if (oldController != null)
+                    {
+                        oldController.removePickEventListener(handler);
+                    }
+                    newController.addPickEventListener(handler);
                 }
                 mCursorController = newController;
                 if (newController instanceof SXRGazeCursorController)
                 {
                     ((SXRGazeCursorController) newController).setTouchScreenDepth(displayDepth);
                 }
-                newController.setCursor(mCursor);
+                if (displayDepth == 0)
+                {
+                    mCursor = new SXRNode(ctx, ctx.createQuad(0.2f * cursorDepth, 0.2f * cursorDepth), ctx.getAssetLoader().loadTexture(new SXRAndroidResource(ctx, R.raw.cursor)));
+                    mCursor.getRenderData().setDepthTest(false);
+                    mCursor.getRenderData().disableLight();
+                    mCursor.getRenderData().setRenderingOrder(SXRRenderData.SXRRenderingOrder.OVERLAY);
+                    newController.setCursor(mCursor);
+                }
+                else
+                {
+                    newController.setCursor(null);
+                }
                 newController.getPicker().setPickClosest(false);
                 newController.setCursorDepth(cursorDepth);
-                newController.setCursorControl(SXRCursorController.CursorControl.CURSOR_CONSTANT_DEPTH);
+                newController.setCursorControl(SXRCursorController.CursorControl.PROJECT_CURSOR_ON_SURFACE);
                 newController.getPicker().setEventOptions(eventOptions);
             }
         });
